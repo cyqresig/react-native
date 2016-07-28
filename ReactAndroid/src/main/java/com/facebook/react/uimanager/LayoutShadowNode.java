@@ -12,6 +12,8 @@ import com.facebook.csslayout.CSSFlexDirection;
 import com.facebook.csslayout.CSSJustify;
 import com.facebook.csslayout.CSSPositionType;
 import com.facebook.csslayout.CSSWrap;
+import com.facebook.react.uimanager.annotations.ReactProp;
+import com.facebook.react.uimanager.annotations.ReactPropGroup;
 
 /**
  * Supply setters for base view layout properties such as width, height, flex properties,
@@ -24,9 +26,29 @@ public class LayoutShadowNode extends ReactShadowNode {
     setStyleWidth(CSSConstants.isUndefined(width) ? width : PixelUtil.toPixelFromDIP(width));
   }
 
+  @ReactProp(name = ViewProps.MIN_WIDTH, defaultFloat = CSSConstants.UNDEFINED)
+  public void setMinWidth(float minWidth) {
+    setStyleMinWidth(CSSConstants.isUndefined(minWidth) ? minWidth : PixelUtil.toPixelFromDIP(minWidth));
+  }
+
+  @ReactProp(name = ViewProps.MAX_WIDTH, defaultFloat = CSSConstants.UNDEFINED)
+  public void setMaxWidth(float maxWidth) {
+    setStyleMaxWidth(CSSConstants.isUndefined(maxWidth) ? maxWidth : PixelUtil.toPixelFromDIP(maxWidth));
+  }
+
   @ReactProp(name = ViewProps.HEIGHT, defaultFloat = CSSConstants.UNDEFINED)
   public void setHeight(float height) {
     setStyleHeight(CSSConstants.isUndefined(height) ? height : PixelUtil.toPixelFromDIP(height));
+  }
+
+  @ReactProp(name = ViewProps.MIN_HEIGHT, defaultFloat = CSSConstants.UNDEFINED)
+  public void setMinHeight(float minHeight) {
+    setStyleMinHeight(CSSConstants.isUndefined(minHeight) ? minHeight : PixelUtil.toPixelFromDIP(minHeight));
+  }
+
+  @ReactProp(name = ViewProps.MAX_HEIGHT, defaultFloat = CSSConstants.UNDEFINED)
+  public void setMaxHeight(float maxHeight) {
+    setStyleMaxHeight(CSSConstants.isUndefined(maxHeight) ? maxHeight : PixelUtil.toPixelFromDIP(maxHeight));
   }
 
   @ReactProp(name = ViewProps.LEFT, defaultFloat = CSSConstants.UNDEFINED)
@@ -58,7 +80,7 @@ public class LayoutShadowNode extends ReactShadowNode {
   public void setFlexDirection(@Nullable String flexDirection) {
     setFlexDirection(
         flexDirection == null ? CSSFlexDirection.COLUMN : CSSFlexDirection.valueOf(
-            flexDirection.toUpperCase(Locale.US)));
+            flexDirection.toUpperCase(Locale.US).replace("-", "_")));
   }
 
   @ReactProp(name = ViewProps.FLEX_WRAP)

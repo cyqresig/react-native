@@ -17,8 +17,8 @@ module.exports = {
     return this._getRoots();
   },
 
-  getBlacklistRE() {
-    return blacklist('');
+  getBlacklistRE(platform) {
+    return blacklist(platform);
   },
 
   _getRoots() {
@@ -33,4 +33,9 @@ module.exports = {
       return [path.resolve(__dirname, '..')];
     }
   },
+
+  getTransformModulePath() {
+    return require.resolve('./transformer');
+  },
+
 };

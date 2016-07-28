@@ -24,6 +24,7 @@ extern NSString *const RCTReactTagAttributeName;
 @property (nonatomic, assign) CGFloat letterSpacing;
 @property (nonatomic, assign) CGFloat lineHeight;
 @property (nonatomic, assign) NSUInteger numberOfLines;
+@property (nonatomic, assign) NSLineBreakMode ellipsizeMode;
 @property (nonatomic, assign) CGSize shadowOffset;
 @property (nonatomic, assign) NSTextAlignment textAlign;
 @property (nonatomic, assign) NSWritingDirection writingDirection;
@@ -33,6 +34,9 @@ extern NSString *const RCTReactTagAttributeName;
 @property (nonatomic, assign) CGFloat fontSizeMultiplier;
 @property (nonatomic, assign) BOOL allowFontScaling;
 @property (nonatomic, assign) CGFloat opacity;
+@property (nonatomic, assign) CGSize textShadowOffset;
+@property (nonatomic, assign) CGFloat textShadowRadius;
+@property (nonatomic, strong) UIColor *textShadowColor;
 
 - (void)recomputeText;
 

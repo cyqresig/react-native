@@ -13,12 +13,14 @@
 #import "RCTUIManager.h"
 #import "RCTBridge.h"
 #import "RCTConvert.h"
-#import "RCTImageComponent.h"
 #import "RCTLog.h"
 #import "RCTShadowRawText.h"
 #import "RCTText.h"
 #import "RCTUtils.h"
+#import "RCTConvert.h"
+#import "RCTTextView.h"
 
+NSString *const RCTShadowViewAttributeName = @"RCTShadowViewAttributeName";
 NSString *const RCTIsHighlightedAttributeName = @"IsHighlightedAttributeName";
 NSString *const RCTReactTagAttributeName = @"ReactTagAttributeName";
 
@@ -26,24 +28,25 @@ NSString *const RCTReactTagAttributeName = @"ReactTagAttributeName";
 {
   NSTextStorage *_cachedTextStorage;
   CGFloat _cachedTextStorageWidth;
+  CGFloat _cachedTextStorageWidthMode;
   NSAttributedString *_cachedAttributedString;
   CGFloat _effectiveLetterSpacing;
 }
 
-static css_dim_t RCTMeasure(void *context, float width)
+static CSSSize RCTMeasure(void *context, float width, CSSMeasureMode widthMode, float height, CSSMeasureMode heightMode)
 {
   RCTShadowText *shadowText = (__bridge RCTShadowText *)context;
-  NSTextStorage *textStorage = [shadowText buildTextStorageForWidth:width];
+  NSTextStorage *textStorage = [shadowText buildTextStorageForWidth:width widthMode:widthMode];
   NSLayoutManager *layoutManager = textStorage.layoutManagers.firstObject;
   NSTextContainer *textContainer = layoutManager.textContainers.firstObject;
   CGSize computedSize = [layoutManager usedRectForTextContainer:textContainer].size;
 
-  css_dim_t result;
-  result.dimensions[CSS_WIDTH] = RCTCeilPixelValue(computedSize.width);
+  CSSSize result;
+  result.width = RCTCeilPixelValue(computedSize.width);
   if (shadowText->_effectiveLetterSpacing < 0) {
-    result.dimensions[CSS_WIDTH] -= shadowText->_effectiveLetterSpacing;
+    result.width -= shadowText->_effectiveLetterSpacing;
   }
-  result.dimensions[CSS_HEIGHT] = RCTCeilPixelValue(computedSize.height);
+  result.height = RCTCeilPixelValue(computedSize.height);
   return result;
 }
 
@@ -55,6 +58,10 @@ static css_dim_t RCTMeasure(void *context, float width)
     _isHighlighted = NO;
     _textDecorationStyle = NSUnderlineStyleSingle;
     _opacity = 1.0;
+    _cachedTextStorageWidth = -1;
+    _cachedTextStorageWidthMode = -1;
+    _fontSizeMultiplier = 1.0;
+    CSSNodeSetMeasureFunc(self.cssNode, RCTMeasure);
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(contentSizeMultiplierDidChange:)
                                                  name:RCTUIManagerWillUpdateViewsDueToContentSizeMultiplierChangeNotification
@@ -74,31 +81,54 @@ static css_dim_t RCTMeasure(void *context, float width)
   return [[superDescription substringToIndex:superDescription.length - 1] stringByAppendingFormat:@"; text: %@>", [self attributedString].string];
 }
 
+- (BOOL)isCSSLeafNode
+{
+  return YES;
+}
+
 - (void)contentSizeMultiplierDidChange:(NSNotification *)note
 {
-  [self dirtyLayout];
+  CSSNodeMarkDirty(self.cssNode);
   [self dirtyText];
 }
 
 - (NSDictionary<NSString *, id> *)processUpdatedProperties:(NSMutableSet<RCTApplierBlock> *)applierBlocks
                                           parentProperties:(NSDictionary<NSString *, id> *)parentProperties
 {
+  if ([[self reactSuperview] isKindOfClass:[RCTShadowText class]]) {
+    return parentProperties;
+  }
+
   parentProperties = [super processUpdatedProperties:applierBlocks
                                     parentProperties:parentProperties];
 
   UIEdgeInsets padding = self.paddingAsInsets;
   CGFloat width = self.frame.size.width - (padding.left + padding.right);
 
-  NSTextStorage *textStorage = [self buildTextStorageForWidth:width];
-  [applierBlocks addObject:^(NSDictionary<NSNumber *, RCTText *> *viewRegistry) {
-    RCTText *view = viewRegistry[self.reactTag];
+  NSNumber *parentTag = [[self reactSuperview] reactTag];
+  NSTextStorage *textStorage = [self buildTextStorageForWidth:width widthMode:CSSMeasureModeExactly];
+  [applierBlocks addObject:^(NSDictionary<NSNumber *, UIView *> *viewRegistry) {
+    RCTText *view = (RCTText *)viewRegistry[self.reactTag];
     view.textStorage = textStorage;
+
+    /**
+     * NOTE: this logic is included to support rich text editing inside multiline
+     * `<TextInput>` controls. It is required in order to ensure that the
+     * textStorage (aka attributed string) is copied over from the RCTShadowText
+     * to the RCTText view in time to be used to update the editable text content.
+     * TODO: we should establish a delegate relationship betweeen RCTTextView
+     * and its contaned RCTText element when they get inserted and get rid of this
+     */
+    UIView *parentView = viewRegistry[parentTag];
+    if ([parentView respondsToSelector:@selector(performTextUpdate)]) {
+      [(RCTTextView *)parentView performTextUpdate];
+    }
   }];
 
   return parentProperties;
 }
 
-- (void)applyLayoutNode:(css_node_t *)node
+- (void)applyLayoutNode:(CSSNodeRef)node
       viewsWithNewFrame:(NSMutableSet<RCTShadowView *> *)viewsWithNewFrame
        absolutePosition:(CGPoint)absolutePosition
 {
@@ -106,9 +136,48 @@ static css_dim_t RCTMeasure(void *context, float width)
   [self dirtyPropagation];
 }
 
-- (NSTextStorage *)buildTextStorageForWidth:(CGFloat)width
+- (void)applyLayoutToChildren:(CSSNodeRef)node
+            viewsWithNewFrame:(NSMutableSet<RCTShadowView *> *)viewsWithNewFrame
+             absolutePosition:(CGPoint)absolutePosition
 {
-  if (_cachedTextStorage && width == _cachedTextStorageWidth) {
+  // Run layout on subviews.
+  NSTextStorage *textStorage = [self buildTextStorageForWidth:self.frame.size.width widthMode:CSSMeasureModeExactly];
+  NSLayoutManager *layoutManager = textStorage.layoutManagers.firstObject;
+  NSTextContainer *textContainer = layoutManager.textContainers.firstObject;
+  NSRange glyphRange = [layoutManager glyphRangeForTextContainer:textContainer];
+  NSRange characterRange = [layoutManager characterRangeForGlyphRange:glyphRange actualGlyphRange:NULL];
+  [layoutManager.textStorage enumerateAttribute:RCTShadowViewAttributeName inRange:characterRange options:0 usingBlock:^(RCTShadowView *child, NSRange range, BOOL *_) {
+    if (child) {
+      CSSNodeRef childNode = child.cssNode;
+      float width = CSSNodeStyleGetWidth(childNode);
+      float height = CSSNodeStyleGetHeight(childNode);
+      if (isUndefined(width) || isUndefined(height)) {
+        RCTLogError(@"Views nested within a <Text> must have a width and height");
+      }
+      UIFont *font = [textStorage attribute:NSFontAttributeName atIndex:range.location effectiveRange:nil];
+      CGRect glyphRect = [layoutManager boundingRectForGlyphRange:range inTextContainer:textContainer];
+      CGRect childFrame = {{
+        RCTRoundPixelValue(glyphRect.origin.x),
+        RCTRoundPixelValue(glyphRect.origin.y + glyphRect.size.height - height + font.descender)
+      }, {
+        RCTRoundPixelValue(width),
+        RCTRoundPixelValue(height)
+      }};
+
+      NSRange truncatedGlyphRange = [layoutManager truncatedGlyphRangeInLineFragmentForGlyphAtIndex:range.location];
+      BOOL childIsTruncated = NSIntersectionRange(range, truncatedGlyphRange).length != 0;
+
+      [child collectUpdatedFrames:viewsWithNewFrame
+                        withFrame:childFrame
+                           hidden:childIsTruncated
+                 absolutePosition:absolutePosition];
+    }
+  }];
+}
+
+- (NSTextStorage *)buildTextStorageForWidth:(CGFloat)width widthMode:(CSSMeasureMode)widthMode
+{
+  if (_cachedTextStorage && width == _cachedTextStorageWidth && widthMode == _cachedTextStorageWidthMode) {
     return _cachedTextStorage;
   }
 
@@ -119,14 +188,21 @@ static css_dim_t RCTMeasure(void *context, float width)
 
   NSTextContainer *textContainer = [NSTextContainer new];
   textContainer.lineFragmentPadding = 0.0;
-  textContainer.lineBreakMode = _numberOfLines > 0 ? NSLineBreakByTruncatingTail : NSLineBreakByClipping;
+
+  if (_numberOfLines > 0) {
+    textContainer.lineBreakMode = _ellipsizeMode;
+  } else {
+    textContainer.lineBreakMode = NSLineBreakByClipping;
+  }
+
   textContainer.maximumNumberOfLines = _numberOfLines;
-  textContainer.size = (CGSize){isnan(width) ? CGFLOAT_MAX : width, CGFLOAT_MAX};
+  textContainer.size = (CGSize){widthMode == CSSMeasureModeUndefined ? CGFLOAT_MAX : width, CGFLOAT_MAX};
 
   [layoutManager addTextContainer:textContainer];
   [layoutManager ensureLayoutForTextContainer:textContainer];
 
   _cachedTextStorageWidth = width;
+  _cachedTextStorageWidthMode = widthMode;
   _cachedTextStorage = textStorage;
 
   return textStorage;
@@ -190,37 +266,48 @@ static css_dim_t RCTMeasure(void *context, float width)
 
   _effectiveLetterSpacing = letterSpacing.doubleValue;
 
+  UIFont *font = [RCTConvert UIFont:nil withFamily:fontFamily
+                               size:fontSize weight:fontWeight style:fontStyle
+                    scaleMultiplier:_allowFontScaling ? _fontSizeMultiplier : 1.0];
+
+  CGFloat heightOfTallestSubview = 0.0;
   NSMutableAttributedString *attributedString = [NSMutableAttributedString new];
   for (RCTShadowView *child in [self reactSubviews]) {
     if ([child isKindOfClass:[RCTShadowText class]]) {
       RCTShadowText *shadowText = (RCTShadowText *)child;
       [attributedString appendAttributedString:
-        [shadowText _attributedStringWithFontFamily:fontFamily
-                                           fontSize:fontSize
-                                         fontWeight:fontWeight
-                                          fontStyle:fontStyle
-                                      letterSpacing:letterSpacing
-                                 useBackgroundColor:YES
-                                    foregroundColor:shadowText.color ?: foregroundColor
-                                    backgroundColor:shadowText.backgroundColor ?: backgroundColor
-                                            opacity:opacity * shadowText.opacity]];
+       [shadowText _attributedStringWithFontFamily:fontFamily
+                                          fontSize:fontSize
+                                        fontWeight:fontWeight
+                                         fontStyle:fontStyle
+                                     letterSpacing:letterSpacing
+                                useBackgroundColor:YES
+                                   foregroundColor:shadowText.color ?: foregroundColor
+                                   backgroundColor:shadowText.backgroundColor ?: backgroundColor
+                                           opacity:opacity * shadowText.opacity]];
+      [child setTextComputed];
     } else if ([child isKindOfClass:[RCTShadowRawText class]]) {
       RCTShadowRawText *shadowRawText = (RCTShadowRawText *)child;
       [attributedString appendAttributedString:[[NSAttributedString alloc] initWithString:shadowRawText.text ?: @""]];
-    } else if ([child conformsToProtocol:@protocol(RCTImageComponent)]) {
-      UIImage *image = ((id<RCTImageComponent>)child).image;
-      if (image) {
-        NSTextAttachment *imageAttachment = [NSTextAttachment new];
-        imageAttachment.image = image;
-        [attributedString appendAttributedString:[NSAttributedString attributedStringWithAttachment:imageAttachment]];
-      } else {
-        //TODO: add placeholder image?
-      }
+      [child setTextComputed];
     } else {
-      RCTLogError(@"<Text> can't have any children except <Text>, <Image> or raw strings");
+      float width = CSSNodeStyleGetWidth(child.cssNode);
+      float height = CSSNodeStyleGetHeight(child.cssNode);
+      if (isUndefined(width) || isUndefined(height)) {
+        RCTLogError(@"Views nested within a <Text> must have a width and height");
+      }
+      NSTextAttachment *attachment = [NSTextAttachment new];
+      attachment.bounds = (CGRect){CGPointZero, {width, height}};
+      NSMutableAttributedString *attachmentString = [NSMutableAttributedString new];
+      [attachmentString appendAttributedString:[NSAttributedString attributedStringWithAttachment:attachment]];
+      [attachmentString addAttribute:RCTShadowViewAttributeName value:child range:(NSRange){0, attachmentString.length}];
+      [attributedString appendAttributedString:attachmentString];
+      if (height > heightOfTallestSubview) {
+        heightOfTallestSubview = height;
+      }
+      // Don't call setTextComputed on this child. RCTTextManager takes care of
+      // processing inline UIViews.
     }
-
-    [child setTextComputed];
   }
 
   [self _addAttribute:NSForegroundColorAttributeName
@@ -236,17 +323,14 @@ static css_dim_t RCTMeasure(void *context, float width)
      toAttributedString:attributedString];
   }
 
-  UIFont *font = [RCTConvert UIFont:nil withFamily:fontFamily
-                               size:fontSize weight:fontWeight style:fontStyle
-                    scaleMultiplier:(_allowFontScaling && _fontSizeMultiplier > 0.0 ? _fontSizeMultiplier : 1.0)];
   [self _addAttribute:NSFontAttributeName withValue:font toAttributedString:attributedString];
   [self _addAttribute:NSKernAttributeName withValue:letterSpacing toAttributedString:attributedString];
   [self _addAttribute:RCTReactTagAttributeName withValue:self.reactTag toAttributedString:attributedString];
-  [self _setParagraphStyleOnAttributedString:attributedString];
+  [self _setParagraphStyleOnAttributedString:attributedString heightOfTallestSubview:heightOfTallestSubview];
 
   // create a non-mutable attributedString for use by the Text system which avoids copies down the line
   _cachedAttributedString = [[NSAttributedString alloc] initWithAttributedString:attributedString];
-  [self dirtyLayout];
+  CSSNodeMarkDirty(self.cssNode);
 
   return _cachedAttributedString;
 }
@@ -265,6 +349,7 @@ static css_dim_t RCTMeasure(void *context, float width)
  * varying lineHeights, we simply take the max.
  */
 - (void)_setParagraphStyleOnAttributedString:(NSMutableAttributedString *)attributedString
+                      heightOfTallestSubview:(CGFloat)heightOfTallestSubview
 {
   // check if we have lineHeight set on self
   __block BOOL hasParagraphStyle = NO;
@@ -272,31 +357,62 @@ static css_dim_t RCTMeasure(void *context, float width)
     hasParagraphStyle = YES;
   }
 
-  if (!_lineHeight) {
-    self.lineHeight = 0.0;
-  }
+  __block float newLineHeight = _lineHeight ?: 0.0;
+
+  CGFloat fontSizeMultiplier = _allowFontScaling ? _fontSizeMultiplier : 1.0;
 
   // check for lineHeight on each of our children, update the max as we go (in self.lineHeight)
   [attributedString enumerateAttribute:NSParagraphStyleAttributeName inRange:(NSRange){0, attributedString.length} options:0 usingBlock:^(id value, NSRange range, BOOL *stop) {
     if (value) {
       NSParagraphStyle *paragraphStyle = (NSParagraphStyle *)value;
-      CGFloat maximumLineHeight = round(paragraphStyle.maximumLineHeight / self.fontSizeMultiplier);
-      if (maximumLineHeight > self.lineHeight) {
-        self.lineHeight = maximumLineHeight;
+      CGFloat maximumLineHeight = round(paragraphStyle.maximumLineHeight / fontSizeMultiplier);
+      if (maximumLineHeight > newLineHeight) {
+        newLineHeight = maximumLineHeight;
       }
       hasParagraphStyle = YES;
     }
   }];
 
-  self.textAlign = _textAlign ?: NSTextAlignmentNatural;
-  self.writingDirection = _writingDirection ?: NSWritingDirectionNatural;
+  if (self.lineHeight != newLineHeight) {
+    self.lineHeight = newLineHeight;
+  }
+
+  NSTextAlignment newTextAlign = _textAlign ?: NSTextAlignmentNatural;
+
+  // The part below is to address textAlign for RTL language before setting paragraph style
+  // Since we can't get layout directly because this logic is currently run just before layout is calculatede
+  // We will climb up to the first node which style has been setted as non-inherit
+  if (newTextAlign == NSTextAlignmentRight || newTextAlign == NSTextAlignmentLeft) {
+    RCTShadowView *view = self;
+    while (view != nil && CSSNodeStyleGetDirection(view.cssNode) == CSSDirectionInherit) {
+      view = [view reactSuperview];
+    }
+    if (view != nil && CSSNodeStyleGetDirection(view.cssNode) == CSSDirectionRTL) {
+      if (newTextAlign == NSTextAlignmentRight) {
+        newTextAlign = NSTextAlignmentLeft;
+      } else if (newTextAlign == NSTextAlignmentLeft) {
+        newTextAlign = NSTextAlignmentRight;
+      }
+    }
+  }
+
+  if (self.textAlign != newTextAlign) {
+    self.textAlign = newTextAlign;
+  }
+  NSWritingDirection newWritingDirection = _writingDirection ?: NSWritingDirectionNatural;
+  if (self.writingDirection != newWritingDirection) {
+    self.writingDirection = newWritingDirection;
+  }
 
   // if we found anything, set it :D
   if (hasParagraphStyle) {
     NSMutableParagraphStyle *paragraphStyle = [NSMutableParagraphStyle new];
     paragraphStyle.alignment = _textAlign;
     paragraphStyle.baseWritingDirection = _writingDirection;
-    CGFloat lineHeight = round(_lineHeight * (_allowFontScaling && self.fontSizeMultiplier > 0.0 ? self.fontSizeMultiplier : 1.0));
+    CGFloat lineHeight = round(_lineHeight * fontSizeMultiplier);
+    if (heightOfTallestSubview > lineHeight) {
+      lineHeight = ceilf(heightOfTallestSubview);
+    }
     paragraphStyle.minimumLineHeight = lineHeight;
     paragraphStyle.maximumLineHeight = lineHeight;
     [attributedString addAttribute:NSParagraphStyleAttributeName
@@ -305,41 +421,31 @@ static css_dim_t RCTMeasure(void *context, float width)
   }
 
   // Text decoration
-  if(_textDecorationLine == RCTTextDecorationLineTypeUnderline ||
-     _textDecorationLine == RCTTextDecorationLineTypeUnderlineStrikethrough) {
+  if (_textDecorationLine == RCTTextDecorationLineTypeUnderline ||
+      _textDecorationLine == RCTTextDecorationLineTypeUnderlineStrikethrough) {
     [self _addAttribute:NSUnderlineStyleAttributeName withValue:@(_textDecorationStyle)
      toAttributedString:attributedString];
   }
-  if(_textDecorationLine == RCTTextDecorationLineTypeStrikethrough ||
-     _textDecorationLine == RCTTextDecorationLineTypeUnderlineStrikethrough){
+  if (_textDecorationLine == RCTTextDecorationLineTypeStrikethrough ||
+      _textDecorationLine == RCTTextDecorationLineTypeUnderlineStrikethrough){
     [self _addAttribute:NSStrikethroughStyleAttributeName withValue:@(_textDecorationStyle)
      toAttributedString:attributedString];
   }
-  if(_textDecorationColor) {
+  if (_textDecorationColor) {
     [self _addAttribute:NSStrikethroughColorAttributeName withValue:_textDecorationColor
      toAttributedString:attributedString];
     [self _addAttribute:NSUnderlineColorAttributeName withValue:_textDecorationColor
      toAttributedString:attributedString];
   }
-}
 
-- (void)fillCSSNode:(css_node_t *)node
-{
-  [super fillCSSNode:node];
-  node->measure = RCTMeasure;
-  node->children_count = 0;
-}
-
-- (void)insertReactSubview:(RCTShadowView *)subview atIndex:(NSInteger)atIndex
-{
-  [super insertReactSubview:subview atIndex:atIndex];
-  self.cssNode->children_count = 0;
-}
-
-- (void)removeReactSubview:(RCTShadowView *)subview
-{
-  [super removeReactSubview:subview];
-  self.cssNode->children_count = 0;
+  // Text shadow
+  if (!CGSizeEqualToSize(_textShadowOffset, CGSizeZero)) {
+    NSShadow *shadow = [NSShadow new];
+    shadow.shadowOffset = _textShadowOffset;
+    shadow.shadowBlurRadius = _textShadowRadius;
+    shadow.shadowColor = _textShadowColor;
+    [self _addAttribute:NSShadowAttributeName withValue:shadow toAttributedString:attributedString];
+  }
 }
 
 - (void)setBackgroundColor:(UIColor *)backgroundColor
@@ -364,13 +470,16 @@ RCT_TEXT_PROPERTY(IsHighlighted, _isHighlighted, BOOL)
 RCT_TEXT_PROPERTY(LetterSpacing, _letterSpacing, CGFloat)
 RCT_TEXT_PROPERTY(LineHeight, _lineHeight, CGFloat)
 RCT_TEXT_PROPERTY(NumberOfLines, _numberOfLines, NSUInteger)
-RCT_TEXT_PROPERTY(ShadowOffset, _shadowOffset, CGSize)
+RCT_TEXT_PROPERTY(EllipsizeMode, _ellipsizeMode, NSLineBreakMode)
 RCT_TEXT_PROPERTY(TextAlign, _textAlign, NSTextAlignment)
 RCT_TEXT_PROPERTY(TextDecorationColor, _textDecorationColor, UIColor *);
 RCT_TEXT_PROPERTY(TextDecorationLine, _textDecorationLine, RCTTextDecorationLineType);
 RCT_TEXT_PROPERTY(TextDecorationStyle, _textDecorationStyle, NSUnderlineStyle);
 RCT_TEXT_PROPERTY(WritingDirection, _writingDirection, NSWritingDirection)
 RCT_TEXT_PROPERTY(Opacity, _opacity, CGFloat)
+RCT_TEXT_PROPERTY(TextShadowOffset, _textShadowOffset, CGSize);
+RCT_TEXT_PROPERTY(TextShadowRadius, _textShadowRadius, CGFloat);
+RCT_TEXT_PROPERTY(TextShadowColor, _textShadowColor, UIColor *);
 
 - (void)setAllowFontScaling:(BOOL)allowFontScaling
 {
@@ -386,6 +495,10 @@ RCT_TEXT_PROPERTY(Opacity, _opacity, CGFloat)
 - (void)setFontSizeMultiplier:(CGFloat)fontSizeMultiplier
 {
   _fontSizeMultiplier = fontSizeMultiplier;
+  if (_fontSizeMultiplier == 0) {
+    RCTLogError(@"fontSizeMultiplier value must be > zero.");
+    _fontSizeMultiplier = 1.0;
+  }
   for (RCTShadowView *child in [self reactSubviews]) {
     if ([child isKindOfClass:[RCTShadowText class]]) {
       ((RCTShadowText *)child).fontSizeMultiplier = fontSizeMultiplier;

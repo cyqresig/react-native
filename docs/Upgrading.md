@@ -5,6 +5,7 @@ layout: docs
 category: Guides
 permalink: docs/upgrading.html
 next: platform-specific-code
+previous: performance
 ---
 
 Upgrading to new versions of React Native will give you access to more APIs, views, developer tools
@@ -15,15 +16,14 @@ version of React Native:
 
 ## 1. Upgrade the `react-native` dependency
 
-Note the latest version of the `react-native` npm package from here:
+Note the latest version of the `react-native` npm package from here (or use `npm info react-native` to check):
 
 * https://www.npmjs.com/package/react-native
 
-Open your `package.json` file and update the version of `react-native` under `dependencies` to the
-latest version. Now, in a terminal run:
+Now install that version of `react-native` in your project with `npm install --save`. For example, to upgrade to the version `0.26`, in a terminal run:
 
 ```sh
-$ npm install
+$ npm install --save react-native@0.26
 ```
 
 ## 2. Upgrade your project templates
@@ -51,7 +51,7 @@ Xcode project format is pretty complex and sometimes it's tricky to upgrade and 
 
 ### From 0.13 to 0.14
 
-The major change in this version happened to the CLI ([see changelog](https://github.com/facebook/react-native/releases/tag/v0.14.0-rc)) and static images ([see docs](http://facebook.github.io/react-native/docs/images.html)). To use the new asset system in existing Xcode project, do the following:
+The major change in this version happened to the CLI ([see changelog](https://github.com/facebook/react-native/releases/tag/v0.14.0-rc)) and static images ([see docs](docs/images.html)). To use the new asset system in existing Xcode project, do the following:
 
 Add new "Run Script" step to your project's build phases:
 
