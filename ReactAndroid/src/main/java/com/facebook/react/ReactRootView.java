@@ -80,7 +80,9 @@ public class ReactRootView extends SizeMonitoringFrameLayout implements RootView
 
   @Override
   protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-    super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+    setMeasuredDimension(
+        MeasureSpec.getSize(widthMeasureSpec),
+        MeasureSpec.getSize(heightMeasureSpec));
 
     mWasMeasured = true;
     // Check if we were waiting for onMeasure to attach the root view
