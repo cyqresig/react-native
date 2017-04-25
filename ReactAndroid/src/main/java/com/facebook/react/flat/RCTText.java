@@ -19,7 +19,7 @@ import android.view.Gravity;
 import com.facebook.yoga.YogaDirection;
 import com.facebook.yoga.YogaMeasureMode;
 import com.facebook.yoga.YogaMeasureFunction;
-import com.facebook.yoga.YogaNodeAPI;
+import com.facebook.yoga.YogaNode;
 import com.facebook.yoga.YogaMeasureOutput;
 import com.facebook.fbui.textlayoutbuilder.TextLayoutBuilder;
 import com.facebook.fbui.textlayoutbuilder.glyphwarmer.GlyphWarmerImpl;
@@ -75,7 +75,7 @@ import com.facebook.react.uimanager.annotations.ReactProp;
 
   @Override
   public long measure(
-      YogaNodeAPI node,
+      YogaNode node,
       float width,
       YogaMeasureMode widthMode,
       float height,
@@ -196,6 +196,13 @@ import com.facebook.react.uimanager.annotations.ReactProp;
     }
 
     performCollectAttachDetachListeners(stateBuilder);
+  }
+
+  @Override
+  boolean doesDraw() {
+    // assume text always draws - this is a performance optimization to avoid having to
+    // getText() when layout was skipped and when collectState wasn't yet called
+    return true;
   }
 
   @ReactProp(name = ViewProps.LINE_HEIGHT, defaultDouble = Double.NaN)
